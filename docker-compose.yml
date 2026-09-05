@@ -1,0 +1,86 @@
+# Twenty CRM — self-hosted, open-source Salesforce alternative
+# Quick start:
+#   cp .env.example .env      # then set APP_SECRET and SERVER_URL
+#   docker compose up -d
+#   open http://localhost:3000
+#
+# Two things that break Twenty quietly if you get them wrong:
+#
+# 1. APP_SECRET must be IDENTICAL on server and worker. Mismatched secrets
+#    leave the UI working while every background job fails to authenticate.
+# 2. The worker must NOT run migrations or register cron jobs — the server
+#    already does both. Hence the two DISABLE_* flags below.
+
+name: twenty
+
+services:
+  server:
+    image: twentycrm/twenty:${TAG:-latest}
+    container_name: twenty_server
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT:-3000}:3000"
+    environment:
+      PG_DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@db:5432/${PG_DB:-default}
+      REDIS_URL: redis://redis:6379
+      SERVER_URL: ${SERVER_URL:-http://localhost:3000}
+      APP_SECRET: ${APP_SECRET:?set APP_SECRET in .env}
+      STORAGE_TYPE: ${STORAGE_TYPE:-local}
+      IS_SIGN_UP_DISABLED: ${IS_SIGN_UP_DISABLED:-false}
+    volumes:
+      - server-local-data:/app/packages/twenty-server/.local-storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: twentycrm/twenty:${TAG:-latest}
+    container_name: twenty_worker
+    restart: unless-stopped
+    command: ["yarn", "worker:prod"]
+    environment:
+      PG_DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@db:5432/${PG_DB:-default}
+      REDIS_URL: redis://redis:6379
+      SERVER_URL: ${SERVER_URL:-http://localhost:3000}
+      APP_SECRET: ${APP_SECRET:?set APP_SECRET in .env}
+      STORAGE_TYPE: ${STORAGE_TYPE:-local}
+      # The server owns both of these. Running them here too causes conflicts.
+      DISABLE_DB_MIGRATIONS: "true"
+      DISABLE_CRON_JOBS_REGISTRATION: "true"
+    volumes:
+      - server-local-data:/app/packages/twenty-server/.local-storage
+    depends_on:
+      - server
+
+  db:
+    image: postgres:16
+    container_name: twenty_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-postgres}
+      POSTGRES_DB: ${PG_DB:-default}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-postgres} -d ${PG_DB:-default}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:8.2.1-alpine
+    container_name: twenty_redis
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  server-local-data:
+  db-data:
